@@ -7,6 +7,8 @@ import torch.nn as nn
 # import constants
 from constants import *
 
+nltk.download('wordnet')
+
 # meter class for storing results
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -128,7 +130,7 @@ def bleu_score(reference, hypothesis):
     }
 
 def meteor_score(reference, hypothesis):
-    return nltk.translate.meteor_score.single_meteor_score(' '.join(reference), ' '.join(hypothesis))
+    return nltk.translate.meteor_score.single_meteor_score([' '.join(reference)], [' '.join(hypothesis)])
 
 def prec_at_1(predicted, actual):
     return torch.sum(torch.eq(predicted.topk(k=1)[1], actual)).item() / actual.size(0)
