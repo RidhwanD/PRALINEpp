@@ -42,3 +42,21 @@ def get_instanseof_from_Wikidata(entity):
     results = sparqlwd.query().convert()
     return results
 
+def transform_to_JSONready(entity):
+    attributes = get_attributes_from_Wikidata(entity)
+    instanceof = get_instanseof_from_Wikidata(entity)
+    result = {}
+    result["desc"] = attributes["results"]["bindings"][0]["desc"]["value"]
+    result["instances"] = []
+    for re in instanceof["results"]["bindings"]:
+        instance = {}
+        instance["kbID"] = re["instance"]["value"].split("/")[-1]
+        instance["label"] = re["label"]["value"]
+        result["instances"].append(instance)
+    result["aliases"] = [x.strip() for x in attributes["results"]["bindings"][0]["alt"]["value"].split(",")]
+    result["label"] = attributes["results"]["bindings"][0]["label"]["value"]
+        
+    return result
+    
+
+
