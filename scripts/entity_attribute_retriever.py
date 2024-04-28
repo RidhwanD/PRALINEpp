@@ -8,12 +8,14 @@ Created on Sun Apr 28 18:52:47 2024
 import time
 import os
 import json
+from tqdm import tqdm
 from SPARQLWrapper import SPARQLWrapper, JSON
-from path_retriever import retrieve_all_entities
+from data_retriever import retrieve_all_entities
 from pathlib import Path
 
 def get_attributes_from_Wikidata(entity):
-    sparqlwd = SPARQLWrapper("https://query.wikidata.org/sparql")
+    user_agent = 'CoolBot/0.0 (https://example.org/coolbot/; coolbot@example.org)'
+    sparqlwd = SPARQLWrapper("https://query.wikidata.org/sparql", user_agent)
     myid = "wd:"+entity
     sparqlwd.setQuery("""
                 SELECT *
@@ -31,7 +33,8 @@ def get_attributes_from_Wikidata(entity):
     return results
 
 def get_instanseof_from_Wikidata(entity):
-    sparqlwd = SPARQLWrapper("https://query.wikidata.org/sparql")
+    user_agent = 'CoolBot/0.0 (https://example.org/coolbot/; coolbot@example.org)'
+    sparqlwd = SPARQLWrapper("https://query.wikidata.org/sparql", user_agent)
     myid = "wd:"+entity
     sparqlwd.setQuery("""
                 SELECT *
@@ -72,13 +75,18 @@ def retrieve_JSONready_context(entity):
         
     return result
     
-def build_entity_attribute_data():
+def build_entity_attribute_data(partition):
     # May raises HTTPError: Too Many Requests
-    partition = "test"
-    entities = retrieve_all_entities(partition)
+    entities = list(retrieve_all_entities(partition))
+    print(len(entities))
     dataset = {}
-    for i, entity in enumerate(entities):
-        dataset[entity] = retrieve_JSONready_context(entity)
+    for i, entity in enumerate(tqdm(entities)):
+        try:
+            dataset[entity] = retrieve_JSONready_context(entity)
+        except:
+            time.sleep(10)
+            dataset[entity] = retrieve_JSONready_context(entity)
+        # time.sleep(5)
     
     save_to_JSON(dataset, partition)
     
@@ -88,7 +96,14 @@ def save_to_JSON(dataset, partition):
     ROOT_PATH = Path(os.path.dirname(__file__))
     data_path = str(ROOT_PATH.parent) + '/data/final'
     
-    with open(f"{data_path}/{partition}/entity_attribute.json", "w") as f: 
+    with open(f"{data_path}/{partition}/entity_attributes.json", "w") as f: 
         json.dump(dataset, f, indent=4)
     
-
+def main():
+    # Create entity attributes dataset
+    for partition in ["test", "val", "train"]:
+        print(f"Creating {partition} entity attributes dataset")
+        build_entity_attribute_data(partition)
+    
+if __name__ == '__main__':
+    main()
