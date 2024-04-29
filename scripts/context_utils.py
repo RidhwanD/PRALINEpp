@@ -5,14 +5,12 @@ Created on Thu Apr 25 13:05:04 2024
 Taken from https://github.com/ansonb/RECON
 """
 
-from nltk import word_tokenize
-from nltk import sent_tokenize
 from collections import OrderedDict
 import numpy as np
 import torch
-import embedding_utils
 import json
 import datetime
+
 
 all_zeroes = "ALL_ZERO"
 unknown = "_UNKNOWN"
@@ -79,3 +77,102 @@ def make_start_entity_embeddings(entity_embeddings, entity_pos_indices, unique_e
     vector = vector*start_embedding_template
 
     return vector      
+
+def make_char_vocab(data):
+    char_vocab = OrderedDict()
+    char_vocab['<PAD>'] = 0
+    char_vocab['<UNK>'] = 1
+    char_idx = 2
+    for entity in data.values():
+        # Process description
+        for char in entity['desc']:
+            if char not in char_vocab:
+                char_vocab[char] = char_idx
+                char_idx += 1
+        # Process aliases
+        for alias in entity['aliases']:
+            for char in alias:
+                if char not in char_vocab:
+                    char_vocab[char] = char_idx
+                    char_idx += 1
+        # Process labels
+        label = entity['label']
+        for char in label:
+            if char not in char_vocab:
+                char_vocab[char] = char_idx
+                char_idx += 1
+        # Process instances
+        for instance in entity['instances']:
+            for char in instance['label']:
+                if char not in char_vocab:
+                    char_vocab[char] = char_idx
+                    char_idx += 1
+    return char_vocab
+
+def make_word_vocab(data):
+    word_vocab = OrderedDict()
+    word_vocab['<PAD>'] = 0
+    word_vocab['<UNK>'] = 1
+    word_idx = 2
+    for entity in data.values():
+        # Process description
+        for word in entity['desc'].split():
+            if word not in word_vocab:
+                word_vocab[word] = word_idx
+                word_idx += 1
+        # Process aliases
+        for alias in entity['aliases']:
+            for word in alias.split():
+                if word not in word_vocab:
+                    word_vocab[word] = word_idx
+                    word_idx += 1
+        # Process labels
+        label = entity['label'].split()
+        for word in label:
+            if word not in word_vocab:
+                word_vocab[word] = word_idx
+                word_idx += 1
+        # Process instances
+        for instance in entity['instances']:
+            for word in instance['label'].split():
+                if word not in word_vocab:
+                    word_vocab[word] = word_idx
+                    word_idx += 1
+    return word_vocab
+
+def get_unique_entities(data):
+    unique_entities = set()
+    unique_entities.add(-1)
+    
+    entity_surface_forms = [['ALL_ZERO']]
+
+    for d in data:
+      for entity in d['vertexSet']:
+        unique_entities.add(entity['kbID'])
+        entity_surface_forms.append([d['tokens'][tp] for tp in entity['tokenpositions']])
+
+    return list(unique_entities), entity_surface_forms
+
+def get_batch_unique_entities(entity_indices, entity_surface_forms):
+    unique_entities = {-1: ['ALL_ZERO']}
+    unique_entities_count = {-1: 0}
+    for i in range(entity_indices.shape[0]):
+      for j in range(entity_indices.shape[1]):
+        for k in range(entity_indices.shape[2]):
+          unique_entities[entity_indices[i,j,k]] = entity_surface_forms[i,j,k]
+          unique_entities_count[entity_indices[i,j,k]] = unique_entities_count.get(entity_indices[i,j,k],0) + 1
+
+    unique_entities_set = []
+    unique_entities_surface_forms = []
+    ent_occurrence = []
+    ent_index = []
+    for k, v in unique_entities.items():
+      unique_entities_set.append(k)
+      unique_entities_surface_forms.append(v)
+      ent_occurrence.append(unique_entities_count[k])
+      ent_index.append(k)
+    max_entity_pos = np.argmax(ent_occurrence)
+    max_occurred_ent = ent_index[max_entity_pos]
+    max_occurred_ent_pos = unique_entities_set.index(max_occurred_ent)
+
+    return np.array(unique_entities_set), unique_entities_surface_forms, max_occurred_ent_pos

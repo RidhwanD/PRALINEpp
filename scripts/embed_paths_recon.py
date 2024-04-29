@@ -8,15 +8,10 @@ Taken from https://github.com/ansonb/RECON
 
 import json
 import torch
-import numpy as np
 from torch import nn
 from context_utils import make_char_vocab, make_word_vocab
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
-from collections import OrderedDict
-
-MAX_EDGES_PER_GRAPH = 72
-MAX_NUM_NODES = 9
 
 class CharEmbeddings(nn.Module):
     def __init__(self, vocab_size, embed_dim, drop_out_rate):
@@ -75,64 +70,172 @@ class WordEmbeddings(nn.Module):
         """
         return self.embeddings(word_indices)
 
+    
+class EACEmbedding(nn.Module):
+    """input_dim, hidden_dim, layers, is_bidirectional, drop_out_rate, entity_embed_dim, conv_filter_size, entity_conv_filter_size, word_embed_dim, word_vocab, char_embed_dim, max_word_len_entity, char_vocab, char_feature_size"""
+    
+    def __init__(self, char_vocab_size, word_vocab_size, drop_out_rate, word_embed_dim, char_embed_dim,
+                 hidden_dim, num_layers, num_classes, conv_filter_size):
+        super(EACEmbedding, self).__init__()
 
-class EntityEmbedding(nn.Module):
-    def __init__(self, input_dim, hidden_dim, layers, is_bidirectional, drop_out_rate, entity_embed_dim, conv_filter_size, entity_conv_filter_size, word_embed_dim, word_vocab, char_embed_dim, max_word_len_entity, char_vocab, char_feature_size):
-        super(EntityEmbedding, self).__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.layers = layers
-        self.is_bidirectional = is_bidirectional
-        self.drop_rate = drop_out_rate
+        # Word embeddings
+        self.word_embeddings = WordEmbeddings(word_vocab_size, word_embed_dim)
 
-        self.word_embeddings = WordEmbeddings(len(word_vocab), word_embed_dim)
-        #self.word_embeddings = word_embeddings
-        self.char_embeddings = CharEmbeddings(len(char_vocab), char_embed_dim, self.drop_rate)
-        self.lstm = nn.LSTM(self.input_dim, self.hidden_dim, self.layers, batch_first=True,
-          bidirectional=bool(self.is_bidirectional))
+        # Character embeddings
+        self.char_embeddings = CharEmbeddings(char_vocab_size, char_embed_dim, drop_out_rate)
 
-        # self.dropout = nn.Dropout(self.drop_rate)
-        self.conv1d = nn.Conv1d(char_embed_dim, char_feature_size, conv_filter_size)
-        self.max_pool = nn.MaxPool1d(max_word_len_entity + conv_filter_size - 1, max_word_len_entity + conv_filter_size - 1)
+        # Bidirectional LSTM encoder
+        self.lstm = nn.LSTM(word_embed_dim + char_embed_dim, hidden_dim, 
+                            num_layers=num_layers, bidirectional=True, batch_first=True)
 
-        self.conv1d_entity = nn.Conv1d(2*hidden_dim, entity_embed_dim, entity_conv_filter_size)
-        self.max_pool_entity = nn.MaxPool1d(32, 32) # max batch len for context is 128
+        # 1D convolutional network (CNN)
+        self.conv1d = nn.Conv1d(2 * hidden_dim, num_classes, conv_filter_size)
 
-    def forward(self, words, chars, conv_mask):
-        batch_size = words.shape[0]
-        max_batch_len = words.shape[1]
-
-        # words = words.view(words.shape[0]*words.shape[1],words.shape[2])
-        # chars = chars.view(chars.shape[0]*chars.shape[1],chars.shape[2])
-
-        src_word_embeds = self.word_embeddings(words)
-        char_embeds = self.char_embeddings(chars)
-        char_embeds = char_embeds.permute(0, 2, 1)
-
-        char_feature = torch.tanh(self.max_pool(self.conv1d(char_embeds)))
-        char_feature = char_feature.permute(0, 2, 1)
-
-        print(words.shape, chars.shape, src_word_embeds.shape, char_feature.shape)
-
-        words_input = torch.cat((src_word_embeds, char_feature), -1)
-        outputs, hc = self.lstm(words_input)
-
-        # h_drop = self.dropout(hc[0])
-        h_n = hc[0].view(self.layers, 2, words.shape[0], self.hidden_dim)
-        h_n = h_n[-1,:,:,:].squeeze() # (num_dir,batch,hidden)
-        h_n = h_n.permute((1,0,2)) # (batch,num_dir,hidden)
-        h_n = h_n.contiguous().view(h_n.shape[0],h_n.shape[1]*h_n.shape[2]) # (batch,num_dir*hidden)
-        h_n_batch = h_n.view(batch_size,max_batch_len,h_n.shape[1])
-
-        h_n_batch = h_n_batch.permute(0, 2, 1)
-        conv_entity = self.conv1d_entity(h_n_batch)
-        conv_mask = conv_mask.unsqueeze(dim=1)
-        conv_mask = conv_mask.repeat(1,conv_entity.shape[1],1)
-        conv_entity.data.masked_fill_(conv_mask.data, -float('inf'))
-
-        max_pool_entity = nn.MaxPool1d(conv_entity.shape[-1], conv_entity.shape[-1])
-        entity_embed = max_pool_entity(conv_entity)
-        entity_embed = entity_embed.permute(0, 2, 1).squeeze(dim=1)
+    def forward(self, word_indices, char_indices):
         
-        return entity_embed
+        # Word embeddings
+        word_embeds = self.word_embeddings(word_indices)
 
+        # Character embeddings
+        char_embeds = self.char_embeddings(char_indices)
+
+        # Concatenate word and character embeddings
+        combined_embeds = torch.cat((word_embeds, char_embeds[:, :, -1, :]), dim=2)
+
+        # Bidirectional LSTM encoder
+        lstm_output, _ = self.lstm(combined_embeds)
+        
+        # Stack final outputs from BiLSTM
+        stacked_outputs = torch.cat((lstm_output[:, -1, :lstm_output.size(2)//2], 
+                                     lstm_output[:, 0, lstm_output.size(2)//2:]), dim=1)
+        
+        # 1D CNN
+        cnn_output = self.conv1d(stacked_outputs.unsqueeze(2).repeat(1, 1, 3)).squeeze()
+
+        return cnn_output
+
+def load_data(file_path):
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    return data
+
+# Convert text data to numerical representations
+def text_to_indices(text, word_vocab, char_vocab):
+    word_indices = [word_vocab[word] for word in text.split() if word in word_vocab]
+    # char_indices = [[char_vocab[char] for char in word if char in char_vocab] for word in text]
+    char_indices = []
+    for word in text.split():
+        if word in word_vocab:
+            word_indice = []
+            for char in word:
+                if char in char_vocab:
+                    word_indice.append(char_vocab[char])
+            char_indices.append(torch.tensor(word_indice))
+    return word_indices, char_indices
+
+def get_entity_text(entity_data):
+    desc = entity_data.get('desc', '')
+    aliases = entity_data.get('aliases', [])
+    label = entity_data.get('label', '')
+    instances = entity_data.get('instances', [])
+    
+    # Concatenate description, aliases, and label
+    text = desc + " " + ' '.join(aliases) + " " + label
+    
+    # Add instance labels to the text
+    for instance in instances:
+        instance_label = instance.get('label', '')
+        text += " " + instance_label
+    
+    return text
+
+def get_all_indices(data, word_vocab, char_vocab):
+    all_indices = []
+    
+    for entity_id, entity_data in data.items():
+        text = get_entity_text(entity_data)
+        res = text_to_indices(text, word_vocab, char_vocab)
+        index = {}
+        index['text'] = text
+        index['words'] = torch.tensor(res[0])
+        # index['chars'] = torch.tensor(res[1])
+        index['chars'] = nn.utils.rnn.pad_sequence(res[1], batch_first=True, padding_value=0)
+        all_indices.append(index)
+    return all_indices
+
+def train_entity_embedding(model, train_data, val_data, params):
+    # Load train and val data
+    train_loader = DataLoader(train_data, batch_size=params['batch_size'], shuffle=False)
+    val_loader = DataLoader(val_data, batch_size=params['batch_size'], shuffle=False)
+    
+    # Define loss function and optimizer
+    criterion = nn.MSELoss()  # Change this to the desired loss function
+    optimizer = torch.optim.Adam(model.parameters(), lr=params['learning_rate'])
+
+    # Training loop
+    
+    for epoch in range(params['nb_epoch']):
+        model.train()
+        total_loss = 0.0
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{params['nb_epoch']}"):
+            # Extract batch data
+            # print("TEXT", batch['text'])
+            # print("WORDS", batch['words'])
+            # print("CHARS", batch['chars'])
+            words = batch['words']
+            chars = batch['chars']
+
+            # Forward pass
+            optimizer.zero_grad()
+            outputs = model(words, chars)
+
+            # Compute loss
+            # loss = criterion(outputs, batch['labels'])
+            # total_loss += loss.item()
+
+            # Backward pass and optimization
+            # loss.backward()
+            # optimizer.step()
+        
+        avg_train_loss = total_loss / len(train_loader)
+
+        # Validation loop
+        model.eval()
+        with torch.no_grad():
+            total_val_loss = 0.0
+            for val_batch in val_loader:
+                words = val_batch['words']
+                chars = val_batch['chars']
+                outputs = model(words, chars)
+                # val_loss = criterion(outputs, val_batch['labels'])
+                # total_val_loss += val_loss.item()
+
+        avg_val_loss = total_val_loss / len(val_loader)
+
+        print(f'Epoch [{epoch+1}/{params["nb_epoch"]}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+
+'''
+self, word_vocab_size, char_vocab_size, word_embed_dim, char_embed_dim,
+             hidden_dim, num_layers, num_classes, conv_filter_size
+'''
+
+def main():
+    # Load model parameters
+    with open('recon_params.json', 'r') as f:
+        p = json.load(f)
+    
+    # Load train and val data
+    train_data = load_data('../data/final/train/entity_attributes.json')
+    val_data = load_data('../data/final/val/entity_attributes.json')
+    char_vocab = make_char_vocab(train_data)
+    word_vocab = make_word_vocab(train_data)
+    
+    train_indices = get_all_indices(train_data, word_vocab, char_vocab)
+    val_indices = get_all_indices(val_data, word_vocab, char_vocab)
+    # Create and train the model
+    model = EACEmbedding(len(char_vocab), len(word_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size'])
+    # model = EACEmbedding(p['char_embed_dim']+p['word_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['is_bidirectional_ent'], p['drop_out_rate_ent'], p['entity_embed_dim'], p['conv_filter_size'], p['entity_conv_filter_size'], p['word_embed_dim'], word_vocab, p['char_embed_dim'], p['max_char_len'], char_vocab, p['char_feature_size'])
+    train_entity_embedding(model, train_indices, val_indices, p)
+    
+if __name__ == '__main__':
+    main()
