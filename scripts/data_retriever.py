@@ -8,6 +8,7 @@ Created on Thu Apr 25 10:49:39 2024
 import os
 import json
 import argparse
+import re
 from pathlib import Path
 
 def retrieve_all_paths(partition):
@@ -27,8 +28,32 @@ def retrieve_all_paths(partition):
     return paths
 
 def retrieve_all_entities(partition):
+    pattern = r'^Q\d+$'
     paths = retrieve_all_paths(partition)
-    return paths.keys()
+    entities = list(paths.keys())
+    for key in paths:
+        for path in paths[key]:
+            for obj in path[1]:
+                if (bool(re.match(pattern, obj)) and obj not in entities):
+                    entities.append(obj)
+            if bool(re.match(pattern, path[2])) and path[2] not in entities:
+                entities.append(path[2])
+    
+    return entities
+
+def retrieve_all_relations(partition):
+    pattern = r'^P\d+$'
+    paths = retrieve_all_paths(partition)
+    relations = []
+    for key in paths:
+        for path in paths[key]:
+            for objs in path[1]:
+                obj = objs.split('-')
+                # if (obj[0].startswith('P') and len(obj) > 1 and obj[0] not in relations):
+                if bool(re.match(pattern, obj[0])) and obj[0] not in relations:
+                    relations.append(obj[0])
+    
+    return relations
 
 def retrieve_all_attributes(partition):
     # set root path

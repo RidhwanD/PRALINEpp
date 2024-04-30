@@ -10,7 +10,7 @@ import os
 import json
 from tqdm import tqdm
 from SPARQLWrapper import SPARQLWrapper, JSON
-from data_retriever import retrieve_all_entities
+from data_retriever import retrieve_all_entities, retrieve_all_relations
 from pathlib import Path
 
 def get_attributes_from_Wikidata(entity):
@@ -50,9 +50,9 @@ def get_instanseof_from_Wikidata(entity):
     results = sparqlwd.query().convert()
     return results
 
-def retrieve_JSONready_context(entity):
-    attributes = get_attributes_from_Wikidata(entity)
-    instanceof = get_instanseof_from_Wikidata(entity)
+def retrieve_JSONready_context(rel_or_entity):
+    attributes = get_attributes_from_Wikidata(rel_or_entity)
+    instanceof = get_instanseof_from_Wikidata(rel_or_entity)
     result = {}
     try:
         result["desc"] = attributes["results"]["bindings"][0]["desc"]["value"]
@@ -76,33 +76,51 @@ def retrieve_JSONready_context(entity):
     return result
     
 def build_entity_attribute_data(partition):
-    # May raises HTTPError: Too Many Requests
+    # May raises HTTPError: Too Many Requests. Adjust sleep time.
     entities = list(retrieve_all_entities(partition))
-    print(len(entities))
+    
     dataset = {}
     for i, entity in enumerate(tqdm(entities)):
         try:
             dataset[entity] = retrieve_JSONready_context(entity)
         except:
-            time.sleep(10)
+            time.sleep(300)
             dataset[entity] = retrieve_JSONready_context(entity)
         # time.sleep(5)
     
-    save_to_JSON(dataset, partition)
+    save_to_JSON(dataset, partition, "entity")
     
     return dataset
 
-def save_to_JSON(dataset, partition):
+def build_relation_attribute_data(partition):
+    # May raises HTTPError: Too Many Requests. Adjust sleep time.
+    relations = list(retrieve_all_relations(partition))
+
+    dataset = {}
+    for i, rel in enumerate(tqdm(relations)):
+        try:
+            dataset[rel] = retrieve_JSONready_context(rel)
+        except:
+            time.sleep(30)
+            dataset[rel] = retrieve_JSONready_context(rel)
+        # time.sleep(5)
+    
+    save_to_JSON(dataset, partition, "relation")
+    
+    return dataset
+
+def save_to_JSON(dataset, partition, obj):
     ROOT_PATH = Path(os.path.dirname(__file__))
     data_path = str(ROOT_PATH.parent) + '/data/final'
     
-    with open(f"{data_path}/{partition}/entity_attributes.json", "w") as f: 
+    with open(f"{data_path}/{partition}/{obj}_attributes.json", "w") as f: 
         json.dump(dataset, f, indent=4)
     
 def main():
     # Create entity attributes dataset
+    obj = "relation"
     for partition in ["test", "val", "train"]:
-        print(f"Creating {partition} entity attributes dataset")
+        print(f"Creating {partition} {obj} attributes dataset")
         build_entity_attribute_data(partition)
     
 if __name__ == '__main__':
