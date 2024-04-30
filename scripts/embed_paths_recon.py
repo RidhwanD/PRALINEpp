@@ -70,13 +70,10 @@ class WordEmbeddings(nn.Module):
         """
         return self.embeddings(word_indices)
 
-    
-class EACEmbedding(nn.Module):
-    """input_dim, hidden_dim, layers, is_bidirectional, drop_out_rate, entity_embed_dim, conv_filter_size, entity_conv_filter_size, word_embed_dim, word_vocab, char_embed_dim, max_word_len_entity, char_vocab, char_feature_size"""
-    
+class EntityEmbedding(nn.Module):
     def __init__(self, char_vocab_size, word_vocab_size, drop_out_rate, word_embed_dim, char_embed_dim,
                  hidden_dim, num_layers, num_classes, conv_filter_size):
-        super(EACEmbedding, self).__init__()
+        super(EntityEmbedding, self).__init__()
 
         # Word embeddings
         self.word_embeddings = WordEmbeddings(word_vocab_size, word_embed_dim)
@@ -90,28 +87,29 @@ class EACEmbedding(nn.Module):
 
         # 1D convolutional network (CNN)
         self.conv1d = nn.Conv1d(2 * hidden_dim, num_classes, conv_filter_size)
-
-    def forward(self, word_indices, char_indices):
         
-        # Word embeddings
-        word_embeds = self.word_embeddings(word_indices)
-
-        # Character embeddings
-        char_embeds = self.char_embeddings(char_indices)
-
-        # Concatenate word and character embeddings
-        combined_embeds = torch.cat((word_embeds, char_embeds[:, :, -1, :]), dim=2)
-
-        # Bidirectional LSTM encoder
-        lstm_output, _ = self.lstm(combined_embeds)
+    def forward(self, word_char_indices):
+        embeds = []
+        for (text, word_index, char_index) in word_char_indices:
+            
+            word_embeds = self.word_embeddings(word_index)
+            char_embeds = self.char_embeddings(char_index)
+            
+            # Average pooling of char embedding
+            word_embed_avg = torch.mean(char_embeds, dim=2, keepdim=True)
+            
+            char_embeds = word_embed_avg.permute(0, 2, 1, 3)
+            
+            # Concatenate character embeddings and word embeddings
+            concatenated_embeddings = torch.cat((char_embeds, word_embeds), dim=2)
+            
+            lstm_output, _ = self.lstm(concatenated_embeddings.squeeze(1))
+            embeds.append(lstm_output)
         
-        # Stack final outputs from BiLSTM
-        stacked_outputs = torch.cat((lstm_output[:, -1, :lstm_output.size(2)//2], 
-                                     lstm_output[:, 0, lstm_output.size(2)//2:]), dim=1)
+        stacked_outputs = torch.cat(embeds, dim=1)
         
-        # 1D CNN
-        cnn_output = self.conv1d(stacked_outputs.unsqueeze(2).repeat(1, 1, 3)).squeeze()
-
+        cnn_output = self.conv1d(stacked_outputs.permute(0, 2, 1)).unsqueeze(1)
+        
         return cnn_output
 
 def load_data(file_path):
@@ -120,46 +118,56 @@ def load_data(file_path):
     return data
 
 # Convert text data to numerical representations
-def text_to_indices(text, word_vocab, char_vocab):
-    word_indices = [word_vocab[word] for word in text.split() if word in word_vocab]
-    # char_indices = [[char_vocab[char] for char in word if char in char_vocab] for word in text]
-    char_indices = []
-    for word in text.split():
-        if word in word_vocab:
-            word_indice = []
-            for char in word:
-                if char in char_vocab:
-                    word_indice.append(char_vocab[char])
-            char_indices.append(torch.tensor(word_indice))
-    return word_indices, char_indices
-
-def get_entity_text(entity_data):
-    desc = entity_data.get('desc', '')
-    aliases = entity_data.get('aliases', [])
-    label = entity_data.get('label', '')
-    instances = entity_data.get('instances', [])
+def text_to_indices_tensor(text, word_vocab, char_vocab):
+    # Tokenize the sentence into words
+    words = text.split()
     
-    # Concatenate description, aliases, and label
-    text = desc + " " + ' '.join(aliases) + " " + label
+    # Tokenize each word into characters and map to indices
+    char_seq_indices = []
+    max_word_length = 0
+    for word in words:
+        char_indices = [char_vocab.get(char, char_vocab['<PAD>']) for char in word]
+        char_seq_indices.append(char_indices)
+        max_word_length = max(max_word_length, len(char_indices))
     
-    # Add instance labels to the text
-    for instance in instances:
-        instance_label = instance.get('label', '')
-        text += " " + instance_label
+    # Padding
+    padded_char_seq_indices = [seq + [char_vocab['<PAD>']] * (max_word_length - len(seq)) for seq in char_seq_indices]
+    word_seq_indices = [[word_vocab[word] for word in words]]  # Word indices
     
-    return text
+    # Convert to PyTorch tensor
+    words_seq_tensor = torch.tensor(word_seq_indices)
+    chars_seq_tensor = torch.tensor(padded_char_seq_indices)
+    
+    return text, words_seq_tensor, chars_seq_tensor
 
 def get_all_indices(data, word_vocab, char_vocab):
     all_indices = []
     
     for entity_id, entity_data in data.items():
-        text = get_entity_text(entity_data)
-        res = text_to_indices(text, word_vocab, char_vocab)
-        index = {}
-        index['text'] = text
-        index['words'] = torch.tensor(res[0])
-        # index['chars'] = torch.tensor(res[1])
-        index['chars'] = nn.utils.rnn.pad_sequence(res[1], batch_first=True, padding_value=0)
+        entity_indices = []
+        # Process label
+        label = entity_data.get('label', '')
+        if (label):
+            entity_indices.append(text_to_indices_tensor(label, word_vocab, char_vocab))
+        
+        # Process description
+        desc = entity_data.get('desc', '')
+        if (desc):
+            entity_indices.append(text_to_indices_tensor(desc, word_vocab, char_vocab))
+        
+        # Process aliases
+        aliases = entity_data.get('aliases', [])
+        for alias in aliases:
+            if (alias):
+               entity_indices.append(text_to_indices_tensor(alias, word_vocab, char_vocab))
+            
+        # Process aliases
+        instances = entity_data.get('instances', [])
+        for instance in instances:
+            inst_label = instance.get('label', '')
+            if (inst_label):
+                entity_indices.append(text_to_indices_tensor(inst_label, word_vocab, char_vocab))
+        index = {'indices': entity_indices}
         all_indices.append(index)
     return all_indices
 
@@ -179,15 +187,10 @@ def train_entity_embedding(model, train_data, val_data, params):
         total_loss = 0.0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{params['nb_epoch']}"):
             # Extract batch data
-            # print("TEXT", batch['text'])
-            # print("WORDS", batch['words'])
-            # print("CHARS", batch['chars'])
-            words = batch['words']
-            chars = batch['chars']
-
+            indices = batch['indices']
             # Forward pass
             optimizer.zero_grad()
-            outputs = model(words, chars)
+            outputs = model(indices)
 
             # Compute loss
             # loss = criterion(outputs, batch['labels'])
@@ -204,20 +207,16 @@ def train_entity_embedding(model, train_data, val_data, params):
         with torch.no_grad():
             total_val_loss = 0.0
             for val_batch in val_loader:
-                words = val_batch['words']
-                chars = val_batch['chars']
-                outputs = model(words, chars)
+                indices = batch['indices']
+                outputs = model(indices)
                 # val_loss = criterion(outputs, val_batch['labels'])
                 # total_val_loss += val_loss.item()
 
         avg_val_loss = total_val_loss / len(val_loader)
 
         print(f'Epoch [{epoch+1}/{params["nb_epoch"]}], Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
-
-'''
-self, word_vocab_size, char_vocab_size, word_embed_dim, char_embed_dim,
-             hidden_dim, num_layers, num_classes, conv_filter_size
-'''
+        
+        
 
 def main():
     # Load model parameters
@@ -227,14 +226,14 @@ def main():
     # Load train and val data
     train_data = load_data('../data/final/train/entity_attributes.json')
     val_data = load_data('../data/final/val/entity_attributes.json')
-    char_vocab = make_char_vocab(train_data)
-    word_vocab = make_word_vocab(train_data)
+    test_data = load_data('../data/final/test/entity_attributes.json')
+    char_vocab = make_char_vocab({**train_data, **val_data, **test_data})
+    word_vocab = make_word_vocab({**train_data, **val_data, **test_data})
     
     train_indices = get_all_indices(train_data, word_vocab, char_vocab)
     val_indices = get_all_indices(val_data, word_vocab, char_vocab)
     # Create and train the model
-    model = EACEmbedding(len(char_vocab), len(word_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size'])
-    # model = EACEmbedding(p['char_embed_dim']+p['word_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['is_bidirectional_ent'], p['drop_out_rate_ent'], p['entity_embed_dim'], p['conv_filter_size'], p['entity_conv_filter_size'], p['word_embed_dim'], word_vocab, p['char_embed_dim'], p['max_char_len'], char_vocab, p['char_feature_size'])
+    model = EntityEmbedding(len(char_vocab), len(word_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size'])
     train_entity_embedding(model, train_indices, val_indices, p)
     
 if __name__ == '__main__':
