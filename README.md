@@ -19,6 +19,9 @@ cd PRALINE
 pip install -r requirements.txt
 ```
 
+## Dataset
+The dataset used is available [here](https://drive.google.com/file/d/1OV66QJb1QZivlCjyyQfnyVr7rOF0UJ8u/view?usp=sharing).
+
 ## Train
 For training you will need to adjust the paths in [args](args.py) file. At the same file you can also modify and experiment with different model settings.
 ``` bash
