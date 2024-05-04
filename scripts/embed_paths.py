@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 from pathlib import Path
 from flair.data import Sentence
-from flair.embeddings import DocumentPoolEmbeddings#, BertEmbeddings
+from flair.embeddings import DocumentPoolEmbeddings, TransformerWordEmbeddings
 from transformers import BertModel, BertTokenizer
 from embedding_utils import get_window_segments
 
@@ -17,7 +17,7 @@ ROOT_PATH = Path(os.path.dirname(__file__))
 
 parser = argparse.ArgumentParser(description='Prepare data')
 parser.add_argument('--data_path', default=str(ROOT_PATH.parent) + '/data/final', help='Data path')
-parser.add_argument('--partition', default='test', choices=['train', 'val', 'test'], help='Partition')
+parser.add_argument('--partition', default='train', choices=['train', 'val', 'test'], help='Partition')
 parser.add_argument('--model', default='bert-base-uncased', help='Pretrained model')
 args = parser.parse_args()
 
@@ -48,7 +48,7 @@ flair.device = DEVICE
 
 def PRALINE():
     # load bert model
-    pretrained_model = DocumentPoolEmbeddings([BertEmbeddings(args.model, layers='-1', pooling_operation='mean')])
+    pretrained_model = DocumentPoolEmbeddings([TransformerWordEmbeddings(args.model, layers='-1', pooling_operation='mean')])
     
     # create embeddings
     HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_paths.h5'
@@ -133,8 +133,43 @@ def PRALINEpp(mode, window_size=512, stride=256):
                     
                     # Aggregate segment embeddings to obtain the final representation
                     sentence_embedding = torch.mean(torch.stack(segment_embeddings), dim=0)
-    
+                
                 embeddings.append(sentence_embedding.cpu().tolist())
+    
+            if embeddings:
+                # save values
+                h5f.create_dataset(name=startpoint, data=np.vstack(embeddings), compression="gzip", compression_opts=9)
+
+def PRALINEpp_v2(window_size=512, stride=256):
+    # Initialize BERT model and tokenizer
+    pretrained_model = DocumentPoolEmbeddings([TransformerWordEmbeddings(args.model, layers='-1', pooling_operation='mean')])
+    
+    # create embeddings
+    HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_augmentedv2_paths.h5'
+    with h5py.File(HDF5_DIR, 'w') as h5f:
+        for startpoint, pts in tqdm(paths.items()):
+            embeddings = []
+            for path in pts:
+                path_sentence = '[CLS] '
+                mid = path[1]
+                assert type(mid) is list
+                for i, m in enumerate(mid):
+                    if m.startswith('P') and m.split('-')[0] in rel_attributes_dict:
+                        predicate = rel_attributes_dict[m.split('-')[0]]
+                        sep_token = ' [SEP] ' if i > 0 else ' '
+                        token_with_attributes = f"{predicate['label']} [{', '.join(predicate['aliases'])}] ({predicate['desc']}())"
+                        path_sentence = path_sentence + sep_token + token_with_attributes
+                    # elif m.startswith('Q') and m in entity_attributes_dict:
+                    #     entity = entity_attributes_dict[m]
+                    #     sep_token = ' [SEP] ' if i > 0 else ' '
+                    #     token_with_attributes = f"{entity['label']} [{', '.join(entity['aliases'])}] ({entity['desc']}())"
+                    #     path_sentence = path_sentence + sep_token + token_with_attributes
+                    else:
+                        continue
+
+                flair_sentence = Sentence(path_sentence.lower())
+                pretrained_model.embed(flair_sentence)
+                embeddings.append(flair_sentence.embedding.detach().cpu().tolist())
     
             if embeddings:
                 # save values
@@ -143,10 +178,12 @@ def PRALINEpp(mode, window_size=512, stride=256):
 
 
 def main():
-    model = "PRALINEpp"
+    model = "PRALINEpp_v2"
     mode = 'sliding'                   # ['truncate', 'sliding']
     if model == "PRALINEpp":
         PRALINEpp(mode)
+    elif model == "PRALINEpp_v2":
+        PRALINEpp_v2()
         
 if __name__ == '__main__':
     main()
