@@ -37,9 +37,9 @@ with open(f'{args.data_path}/{args.partition}/relation_attributes.json') as json
     rel_attributes_dict = json.load(json_file)
     
 # read entity attribute dictionary
-# entity_attributes_dict = {}
-# with open(f'{args.data_path}/{args.partition}/entity_attributes.json') as json_file:
-#     entity_attributes_dict = json.load(json_file)
+entity_attributes_dict = {}
+with open(f'{args.data_path}/entity_attributes.json') as json_file:
+    entity_attributes_dict = json.load(json_file)
 
 # set device
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -60,12 +60,12 @@ def PRALINE():
                 mid = path[1]
                 assert type(mid) is list
                 for i, m in enumerate(mid):
-                    if not m.startswith('P') or m.split('-')[0] not in labels_dict:
+                    if not m.startswith('P') or m.split('-')[0] not in rel_attributes_dict:
                         continue
     
                     predicate = m.split('-')[0]
                     sep_token = ' [SEP] ' if i > 0 else ' '
-                    path_sentence = path_sentence + sep_token + labels_dict[predicate]
+                    path_sentence = path_sentence + sep_token + rel_attributes_dict[predicate]['label']
     
                 flair_sentence = Sentence(path_sentence.lower())
                 pretrained_model.embed(flair_sentence)
@@ -145,7 +145,7 @@ def PRALINEpp_v2(window_size=512, stride=256):
     pretrained_model = DocumentPoolEmbeddings([TransformerWordEmbeddings(args.model, layers='-1', pooling_operation='mean')])
     
     # create embeddings
-    HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_augmentedv2_paths.h5'
+    HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_augmented-entity_paths.h5'
     with h5py.File(HDF5_DIR, 'w') as h5f:
         for startpoint, pts in tqdm(paths.items()):
             embeddings = []
@@ -159,11 +159,11 @@ def PRALINEpp_v2(window_size=512, stride=256):
                         sep_token = ' [SEP] ' if i > 0 else ' '
                         token_with_attributes = f"{predicate['label']} [{', '.join(predicate['aliases'])}] ({predicate['desc']}())"
                         path_sentence = path_sentence + sep_token + token_with_attributes
-                    # elif m.startswith('Q') and m in entity_attributes_dict:
-                    #     entity = entity_attributes_dict[m]
-                    #     sep_token = ' [SEP] ' if i > 0 else ' '
-                    #     token_with_attributes = f"{entity['label']} [{', '.join(entity['aliases'])}] ({entity['desc']}())"
-                    #     path_sentence = path_sentence + sep_token + token_with_attributes
+                    elif m.startswith('Q') and m in entity_attributes_dict:
+                        entity = entity_attributes_dict[m]
+                        sep_token = ' [SEP] ' if i > 0 else ' '
+                        token_with_attributes = f"{entity['label']} [{', '.join(entity['aliases'])}] ({entity['desc']}())"
+                        path_sentence = path_sentence + sep_token + token_with_attributes
                     else:
                         continue
 
