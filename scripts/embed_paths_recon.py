@@ -19,6 +19,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import BertModel, BertTokenizer
 from embedding_utils import get_window_segments
+from flair.data import Sentence
+from flair.embeddings import DocumentPoolEmbeddings, TransformerWordEmbeddings
 
 # set root path
 ROOT_PATH = Path(os.path.dirname(__file__))
@@ -102,6 +104,24 @@ class WordEmbeddings(nn.Module):
         """
         return self.embeddings(word_indices)
 
+class CustomLayer(nn.Module):
+    def __init__(self, output_size):
+        super(CustomLayer, self).__init__()
+        self.output_size = output_size
+        self.activation = nn.ReLU()  # You can use any activation function here
+
+    def forward(self, x):
+        # Calculate the input size dynamically
+        input_size = x.size(1) * x.size(2)
+        self.fc = nn.Linear(input_size, self.output_size).to(DEVICE)
+        # Flatten the input tensor
+        x = x.view(x.size(0), -1)
+        # Pass through the linear layer
+        x = self.fc(x)
+        # Apply activation function
+        x = self.activation(x)
+        return x
+
 class AttributeEmbedding(nn.Module):
     def __init__(self, char_vocab_size, word_vocab_size, drop_out_rate, word_embed_dim, char_embed_dim,
                  hidden_dim, num_layers, num_classes, conv_filter_size):
@@ -119,6 +139,8 @@ class AttributeEmbedding(nn.Module):
         # print(word_embed_dim + char_embed_dim, hidden_dim, num_layers)
         # 1D convolutional network (CNN)
         self.conv1d = nn.Conv1d(2 * hidden_dim, num_classes, conv_filter_size)
+        
+        self.custom_layer = CustomLayer(output_size=768)
         
     def forward(self, word_char_indices):
         embeds = []
@@ -139,8 +161,10 @@ class AttributeEmbedding(nn.Module):
             # print(char_embeds.shape)
             # print("------------------------------------------------------------------")
             
+            # print(word_embeds.shape, char_embeds.shape)
             # Concatenate character embeddings and word embeddings
             concatenated_embeddings = torch.cat((char_embeds, word_embeds), dim=3)
+            # print(concatenated_embeddings.shape)
             # print(concatenated_embeddings.shape)
             # print("------------------------------------------------------------------")
             
@@ -153,9 +177,59 @@ class AttributeEmbedding(nn.Module):
         # print(stacked_outputs.shape)
         # print("------------------------------------------------------------------")
         
+        cnn_output = self.conv1d(stacked_outputs)
+        
+        embedding = self.custom_layer(cnn_output)
+        
+        return embedding
+    
+class BERTAttributeEmbedding(nn.Module):
+    def __init__(self, char_vocab_size, drop_out_rate, word_embed_dim, char_embed_dim,
+                 hidden_dim, num_layers, num_classes, conv_filter_size):
+        super(BERTAttributeEmbedding, self).__init__()
+
+        # BERT model and tokenizer
+        self.bert_model = DocumentPoolEmbeddings([TransformerWordEmbeddings(args.model, layers='-1', pooling_operation='mean')])
+
+        # Character embeddings
+        self.char_embeddings = CharEmbeddings(char_vocab_size, char_embed_dim, drop_out_rate)
+
+        # Bidirectional LSTM encoder
+        self.lstm = nn.LSTM(self.bert_model.embedding_length + char_embed_dim, hidden_dim, 
+                            num_layers=num_layers, bidirectional=True, batch_first=True)
+        
+        # 1D convolutional network (CNN)
+        self.conv1d = nn.Conv1d(2 * hidden_dim, num_classes, conv_filter_size)
+        
+    def forward(self, word_char_indices):
+        embeds = []
+        for (text, word_index, char_index) in word_char_indices:
+            # BERT word embeddings
+            flair_sentence = Sentence(text.lower())
+            self.bert_model.embed(flair_sentence)
+            bert_output = flair_sentence.embedding
+            
+            # Character embeddings
+            char_embeds = self.char_embeddings(char_index.to(DEVICE))
+            
+            # Average pooling of char embeddings
+            word_embed_avg = torch.mean(char_embeds, dim=2, keepdim=True)
+            char_embeds = word_embed_avg.permute(0, 2, 1, 3)
+            word_embeds = bert_output.view(1, 1, char_embeds.shape[2], -1)
+            
+            print(word_embeds.shape, char_embeds.shape)
+            # Concatenate BERT embeddings and character embeddings
+            concatenated_embeddings = torch.cat((char_embeds, word_embeds), dim=3)
+            print(concatenated_embeddings.shape)
+            
+            lstm_output, _ = self.lstm(concatenated_embeddings.squeeze(1))
+            embeds.append(lstm_output)
+        
+        stacked_outputs = torch.cat(embeds, dim=1).permute(0, 2, 1)
         cnn_output = self.conv1d(stacked_outputs).unsqueeze(1)
         
         return cnn_output
+
 
 ## TODO: Make input for AttributeEmbedding a tensor so we can use cuda!!!
 
@@ -170,10 +244,11 @@ def embed_paths(p, window_size = 510, stride = 255):
     
     char_vocab_ent = make_char_vocab(entity_attributes_dict)
     word_vocab_ent = make_word_vocab(entity_attributes_dict)
+    # model = BERTAttributeEmbedding(len(char_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size']).to(DEVICE)
     model = AttributeEmbedding(len(char_vocab), len(word_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size']).to(DEVICE)
     
     # create embeddings
-    HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_recon_paths.h5'
+    HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_reconcoba_paths.h5'
     with h5py.File(HDF5_DIR, 'w') as h5f:
         for startpoint, pts in tqdm(paths.items()):
             embeddings = []
@@ -226,12 +301,17 @@ def embed_paths(p, window_size = 510, stride = 255):
                 for i in range(num_chunks):
                     # Extract chunk from the tensor
                     chunk = reshaped_tensor[:, i * stride:i * stride + window_size]
-                    # print(chunk.shape, i * stride, i * stride + window_size)
+                    print('============================================================')
+                    print(chunk.shape, i * stride, i * stride + window_size)
+                    print(chunk)
+                    print('-----------------------"special_tokens_chunk"-------------------------------')
                     
                     if chunk.size(1) < window_size:
                         chunk = torch.nn.functional.pad(chunk, (0, (window_size ) - chunk.size(1)), mode='constant', value=0)
                     # Add special tokens [CLS] and [SEP]
                     special_tokens_chunk = torch.cat((torch.tensor([[101]]).to(DEVICE), chunk, torch.tensor([[102]]).to(DEVICE)), dim=1)
+                    print(special_tokens_chunk)
+                    print('-----------------------"tokens_chunk"------------------------')
                     
                     # Create attention mask
                     attention_mask_chunk = torch.ones_like(special_tokens_chunk)
@@ -239,13 +319,19 @@ def embed_paths(p, window_size = 510, stride = 255):
                 
                     # Convert tensor to list of strings (tokenization)
                     tokens_chunk = tokenizer.convert_ids_to_tokens(special_tokens_chunk.squeeze().tolist())
-                
+                    print(tokens_chunk)
+                    print('------------------------"input_ids_chunk"------------------------')
+                    
                     # Convert tokens to IDs
                     input_ids_chunk = tokenizer.convert_tokens_to_ids(tokens_chunk)
-                
+                    print(input_ids_chunk)
+                    print('-------------------------"input_ids_tensor_chunk"--------------------')
+                    
                     # Convert input_ids to tensor
                     input_ids_tensor_chunk = torch.tensor([input_ids_chunk])
-                
+                    print(input_ids_tensor_chunk)
+                    print('------------------------------------------------------------')
+                    
                     # Get BERT embeddings for the chunk
                     with torch.no_grad():
                         outputs_chunk = bert_model(input_ids_tensor_chunk.to(DEVICE), attention_mask=attention_mask_chunk.to(DEVICE))
@@ -261,11 +347,82 @@ def embed_paths(p, window_size = 510, stride = 255):
                 
                 final_embeddings = torch.mean(torch.stack(chunk_embeddings), dim=0)
                 embeddings.append(final_embeddings.cpu().tolist())
-                
+                break
+            
             if embeddings:
                 # save values
                 h5f.create_dataset(name=startpoint, data=np.vstack(embeddings), compression="gzip", compression_opts=9)
 
+def embed_paths_v2(p, window_size = 510, stride = 255):
+    # Initialize BERT model and tokenizer
+    bert_model_name = args.model
+    tokenizer = BertTokenizer.from_pretrained(bert_model_name, device=DEVICE)
+    bert_model = BertModel.from_pretrained(bert_model_name).to(DEVICE)
+    
+    char_vocab = make_char_vocab(rel_attributes_dict)
+    word_vocab = make_word_vocab(rel_attributes_dict)
+    
+    char_vocab_ent = make_char_vocab(entity_attributes_dict)
+    word_vocab_ent = make_word_vocab(entity_attributes_dict)
+    # model = BERTAttributeEmbedding(len(char_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size']).to(DEVICE)
+    model = AttributeEmbedding(len(char_vocab), len(word_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size']).to(DEVICE)
+    
+    # create embeddings
+    HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_reconcoba_paths.h5'
+    with h5py.File(HDF5_DIR, 'w') as h5f:
+        for startpoint, pts in tqdm(paths.items()):
+            embeddings = []
+            for path in pts:
+                concatenated_embedding = torch.empty(1,768).to(DEVICE)
+                mid = path[1]
+                assert type(mid) is list
+                # print("=============================================================")
+                for i, m in enumerate(mid):
+                    if m.startswith('P') and m.split('-')[0] in rel_attributes_dict:
+                        # print(m.split('-')[0])
+                        # print("==================================================================")
+                        predicate = rel_attributes_dict[m.split('-')[0]]
+                        # print(predicate)
+                        # print("------------------------------------------------------------------")
+                        pred_indices = get_attribute_indices(predicate, word_vocab, char_vocab)
+                        pred_indices = [(text, word_indices.unsqueeze(0), char_indices.unsqueeze(0)) for (text, word_indices, char_indices) in pred_indices]
+                        # print(pred_indices)
+                        # print("------------------------------------------------------------------")
+                        pred_embedding = model(pred_indices)
+                        # print(m.split('-')[0])
+                        # print(pred_embedding.shape)
+                        # print("-------------------------------------------------------------")
+                        # print(pred_embedding.shape)
+                        # print("------------------------------------------------------------------")
+                        # pred_embedding = pred_embedding.squeeze(0)
+                        # print(pred_embedding.shape)
+                        # print("------------------------------------------------------------------")
+                        concatenated_embedding = torch.cat((concatenated_embedding, pred_embedding), dim=0)
+
+                    # elif m.startswith('Q') and m.split('-')[0] in entity_attributes_dict:
+                        # print(m.split('-')[0])
+                        # entity = entity_attributes_dict[m]
+                        # print(predicate)
+                        # ent_indices = get_attribute_indices(entity, word_vocab_ent, char_vocab_ent)
+                        # ent_indices = [(text, word_indices.unsqueeze(0), char_indices.unsqueeze(0)) for (text, word_indices, char_indices) in ent_indices]
+                        # ent_embedding = model(ent_indices).squeeze(0)
+                        # concatenated_embedding = torch.cat((concatenated_embedding, ent_embedding), dim=2)
+                        
+                    else:
+                        continue
+                # print(path)
+                # print(concatenated_embedding.shape)
+                # print("-------------------------------------------------------------")
+                final_embeddings = torch.mean(concatenated_embedding, dim=0, keepdim=True).squeeze(0)
+                # print(final_embeddings.shape)
+                # print("-------------------------------------------------------------")
+                embeddings.append(final_embeddings.cpu().tolist())
+                # break
+            
+            # break
+            if embeddings:
+                # save values
+                h5f.create_dataset(name=startpoint, data=np.vstack(embeddings), compression="gzip", compression_opts=9)
 
 def load_data(file_path):
     with open(file_path, 'r') as f:
@@ -313,12 +470,12 @@ def get_attribute_indices(data, word_vocab, char_vocab):
         if (alias):
            indices.append(text_to_indices_tensor(alias, word_vocab, char_vocab))
         
-    # Process aliases
-    instances = data.get('instances', [])
-    for instance in instances:
-        inst_label = instance.get('label', '')
-        if (inst_label):
-            indices.append(text_to_indices_tensor(inst_label, word_vocab, char_vocab))
+    # Process instances
+    # instances = data.get('instances', [])
+    # for instance in instances:
+    #     inst_label = instance.get('label', '')
+    #     if (inst_label):
+    #         indices.append(text_to_indices_tensor(inst_label, word_vocab, char_vocab))
             
     return indices
 
@@ -392,9 +549,9 @@ def main():
     with open('recon_params.json', 'r') as f:
         p = json.load(f)
         
-    embed_paths(p)
+    embed_paths_v2(p)
             
-def mainx():
+def main_training():
     # Load model parameters
     with open('recon_params.json', 'r') as f:
         p = json.load(f)
