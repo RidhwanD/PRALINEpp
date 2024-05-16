@@ -78,6 +78,37 @@ def make_start_entity_embeddings(entity_embeddings, entity_pos_indices, unique_e
 
     return vector      
 
+def make_char_vocab_list(data):
+    char_vocab = OrderedDict()
+    char_vocab['<PAD>'] = 0
+    char_vocab['<UNK>'] = 1
+    char_idx = 2
+    for entity in data:
+        # Process description
+        for char in entity['desc']:
+            if char not in char_vocab:
+                char_vocab[char] = char_idx
+                char_idx += 1
+        # Process aliases
+        for alias in entity['aliases']:
+            for char in alias:
+                if char not in char_vocab:
+                    char_vocab[char] = char_idx
+                    char_idx += 1
+        # Process labels
+        label = entity['label']
+        for char in label:
+            if char not in char_vocab:
+                char_vocab[char] = char_idx
+                char_idx += 1
+        # Process instances
+        for instance in entity['instances']:
+            for char in instance['label']:
+                if char not in char_vocab:
+                    char_vocab[char] = char_idx
+                    char_idx += 1
+    return char_vocab
+
 def make_char_vocab(data):
     char_vocab = OrderedDict()
     char_vocab['<PAD>'] = 0
@@ -108,6 +139,37 @@ def make_char_vocab(data):
                     char_vocab[char] = char_idx
                     char_idx += 1
     return char_vocab
+
+def make_word_vocab_list(data):
+    word_vocab = OrderedDict()
+    word_vocab['<PAD>'] = 0
+    word_vocab['<UNK>'] = 1
+    word_idx = 2
+    for entity in data:
+        # Process description
+        for word in entity['desc'].split():
+            if word not in word_vocab:
+                word_vocab[word] = word_idx
+                word_idx += 1
+        # Process aliases
+        for alias in entity['aliases']:
+            for word in alias.split():
+                if word not in word_vocab:
+                    word_vocab[word] = word_idx
+                    word_idx += 1
+        # Process labels
+        label = entity['label'].split()
+        for word in label:
+            if word not in word_vocab:
+                word_vocab[word] = word_idx
+                word_idx += 1
+        # Process instances
+        for instance in entity['instances']:
+            for word in instance['label'].split():
+                if word not in word_vocab:
+                    word_vocab[word] = word_idx
+                    word_idx += 1
+    return word_vocab
 
 def make_word_vocab(data):
     word_vocab = OrderedDict()
