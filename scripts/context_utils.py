@@ -10,13 +10,43 @@ import numpy as np
 import torch
 import json
 import datetime
-
+import re
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
 
 all_zeroes = "ALL_ZERO"
 unknown = "_UNKNOWN"
 MAX_CTX_SENT_LEN = 32
 MAX_NUM_CONTEXTS = 32
 CUDA = torch.cuda.is_available()
+
+
+# Ensure you have the necessary NLTK data
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+
+def preprocess_sentence(sentence):
+    # Convert to lowercase
+    sentence = sentence.lower()
+    
+    # Remove punctuation and special characters
+    sentence = re.sub(r'[^\w\s]', '', sentence)
+    
+    # Tokenize the sentence
+    tokens = word_tokenize(sentence)
+    
+    # Remove stop words (optional)
+    stop_words = set(stopwords.words('english'))
+    tokens = [word for word in tokens if word not in stop_words]
+    
+    # Lemmatize tokens (optional)
+    lemmatizer = WordNetLemmatizer()
+    tokens = [lemmatizer.lemmatize(word) for word in tokens]
+    
+    return tokens
 
 class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -85,25 +115,25 @@ def make_char_vocab_list(data):
     char_idx = 2
     for entity in data:
         # Process description
-        for char in entity['desc']:
+        for char in " ".join(preprocess_sentence(entity['desc'])):
             if char not in char_vocab:
                 char_vocab[char] = char_idx
                 char_idx += 1
         # Process aliases
         for alias in entity['aliases']:
-            for char in alias:
+            for char in " ".join(preprocess_sentence(alias)):
                 if char not in char_vocab:
                     char_vocab[char] = char_idx
                     char_idx += 1
         # Process labels
-        label = entity['label']
+        label = " ".join(preprocess_sentence(entity['label']))
         for char in label:
             if char not in char_vocab:
                 char_vocab[char] = char_idx
                 char_idx += 1
         # Process instances
         for instance in entity['instances']:
-            for char in instance['label']:
+            for char in " ".join(preprocess_sentence(instance['label'])):
                 if char not in char_vocab:
                     char_vocab[char] = char_idx
                     char_idx += 1
@@ -116,25 +146,25 @@ def make_char_vocab(data):
     char_idx = 2
     for entity in data.values():
         # Process description
-        for char in entity['desc']:
+        for char in " ".join(preprocess_sentence(entity['desc'])):
             if char not in char_vocab:
                 char_vocab[char] = char_idx
                 char_idx += 1
         # Process aliases
         for alias in entity['aliases']:
-            for char in alias:
+            for char in " ".join(preprocess_sentence(alias)):
                 if char not in char_vocab:
                     char_vocab[char] = char_idx
                     char_idx += 1
         # Process labels
-        label = entity['label']
+        label = " ".join(preprocess_sentence(entity['label']))
         for char in label:
             if char not in char_vocab:
                 char_vocab[char] = char_idx
                 char_idx += 1
         # Process instances
         for instance in entity['instances']:
-            for char in instance['label']:
+            for char in " ".join(preprocess_sentence(instance['label'])):
                 if char not in char_vocab:
                     char_vocab[char] = char_idx
                     char_idx += 1
@@ -147,25 +177,25 @@ def make_word_vocab_list(data):
     word_idx = 2
     for entity in data:
         # Process description
-        for word in entity['desc'].split():
+        for word in preprocess_sentence(entity['desc']):
             if word not in word_vocab:
                 word_vocab[word] = word_idx
                 word_idx += 1
         # Process aliases
         for alias in entity['aliases']:
-            for word in alias.split():
+            for word in preprocess_sentence(alias):
                 if word not in word_vocab:
                     word_vocab[word] = word_idx
                     word_idx += 1
         # Process labels
-        label = entity['label'].split()
+        label = preprocess_sentence(entity['label'])
         for word in label:
             if word not in word_vocab:
                 word_vocab[word] = word_idx
                 word_idx += 1
         # Process instances
         for instance in entity['instances']:
-            for word in instance['label'].split():
+            for word in preprocess_sentence(instance['label']):
                 if word not in word_vocab:
                     word_vocab[word] = word_idx
                     word_idx += 1
@@ -178,25 +208,25 @@ def make_word_vocab(data):
     word_idx = 2
     for entity in data.values():
         # Process description
-        for word in entity['desc'].split():
+        for word in preprocess_sentence(entity['desc']):
             if word not in word_vocab:
                 word_vocab[word] = word_idx
                 word_idx += 1
         # Process aliases
         for alias in entity['aliases']:
-            for word in alias.split():
+            for word in preprocess_sentence(alias):
                 if word not in word_vocab:
                     word_vocab[word] = word_idx
                     word_idx += 1
         # Process labels
-        label = entity['label'].split()
+        label = preprocess_sentence(entity['label'])
         for word in label:
             if word not in word_vocab:
                 word_vocab[word] = word_idx
                 word_idx += 1
         # Process instances
         for instance in entity['instances']:
-            for word in instance['label'].split():
+            for word in preprocess_sentence(instance['label']):
                 if word not in word_vocab:
                     word_vocab[word] = word_idx
                     word_idx += 1
@@ -238,3 +268,4 @@ def get_batch_unique_entities(entity_indices, entity_surface_forms):
     max_occurred_ent_pos = unique_entities_set.index(max_occurred_ent)
 
     return np.array(unique_entities_set), unique_entities_surface_forms, max_occurred_ent_pos
+

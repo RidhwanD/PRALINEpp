@@ -15,7 +15,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from pathlib import Path
 from torch import nn
-from context_utils import make_char_vocab, make_word_vocab, make_char_vocab_list, make_word_vocab_list
+from context_utils import make_char_vocab, make_word_vocab, make_char_vocab_list, make_word_vocab_list, preprocess_sentence
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -24,7 +24,7 @@ ROOT_PATH = Path(os.path.dirname(__file__))
 
 parser = argparse.ArgumentParser(description='Prepare data')
 parser.add_argument('--data_path', default=str(ROOT_PATH.parent) + '/data/final', help='Data path')
-parser.add_argument('--partition', default='train', choices=['train', 'val', 'test'], help='Partition')
+parser.add_argument('--partition', default='test', choices=['train', 'val', 'test'], help='Partition')
 parser.add_argument('--model', default='bert-base-uncased', help='Pretrained model')
 args = parser.parse_args()
 
@@ -119,6 +119,53 @@ class CustomLayer(nn.Module):
         x = self.activation(x)
         return x
 
+class IntgAttributeEmbedding(nn.Module):
+    def __init__(self, char_vocab_size, word_vocab_size, drop_out_rate, word_embed_dim, char_embed_dim,
+                 hidden_dim, num_layers, num_classes, conv_filter_size):
+        super(AttributeEmbedding, self).__init__()
+
+        # Word embeddings
+        self.word_embeddings = WordEmbeddings(word_vocab_size, word_embed_dim)
+
+        # Character embeddings
+        self.char_embeddings = CharEmbeddings(char_vocab_size, char_embed_dim, drop_out_rate)
+
+        # Bidirectional LSTM encoder
+        self.lstm = nn.LSTM(word_embed_dim + char_embed_dim, hidden_dim, 
+                            num_layers=num_layers, bidirectional=True, batch_first=True)
+        
+        # 1D convolutional network (CNN)
+        self.conv1d = nn.Conv1d(2 * hidden_dim, num_classes, conv_filter_size)
+        
+        self.custom_layer = CustomLayer(output_size=768)
+        
+        # Final linear layer for classification
+        # self.fc = nn.Linear(768, 2)
+        
+    def forward(self, word_char_indices):
+        embeds = []
+        for (text, word_index, char_index) in word_char_indices:
+            word_embeds = self.word_embeddings(word_index).squeeze(0)
+            char_embeds = self.char_embeddings(char_index)
+            
+            # Average pooling of char embedding
+            word_embed_avg = torch.mean(char_embeds.squeeze(0), dim=2, keepdim=True)
+            char_embeds = word_embed_avg.permute(0, 2, 1, 3)
+            
+            concatenated_embeddings = torch.cat((char_embeds, word_embeds), dim=3)
+            
+            lstm_output, _ = self.lstm(concatenated_embeddings.squeeze(1))
+            
+            embeds.append(lstm_output)
+        
+        stacked_outputs = torch.cat(embeds, dim=1).permute(0, 2, 1)
+        
+        cnn_output = self.conv1d(stacked_outputs)
+        
+        embedding = self.custom_layer(cnn_output)
+        
+        return embedding
+
 class AttributeEmbedding(nn.Module):
     def __init__(self, char_vocab_size, word_vocab_size, drop_out_rate, word_embed_dim, char_embed_dim,
                  hidden_dim, num_layers, num_classes, conv_filter_size):
@@ -145,6 +192,9 @@ class AttributeEmbedding(nn.Module):
     def forward(self, word_char_indices):
         embeds = []
         for (text, word_index, char_index) in word_char_indices:
+            if not preprocess_sentence(text[0]):
+                continue
+            
             word_embeds = self.word_embeddings(word_index).squeeze(0)
             char_embeds = self.char_embeddings(char_index)
             
@@ -172,6 +222,9 @@ class AttributeEmbedding(nn.Module):
         embeds = []
         for (text, word_index, char_index) in word_char_indices:
             # print(text)
+            if not preprocess_sentence(text):
+                continue
+            
             word_embeds = self.word_embeddings(word_index).squeeze(0)
             char_embeds = self.char_embeddings(char_index)
             
@@ -198,11 +251,11 @@ def embed_paths_trained(p):
     word_vocab = make_word_vocab(rel_attributes_dict)
     
     model = AttributeEmbedding(len(char_vocab), len(word_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size']) #.to(DEVICE)
-    model.load_state_dict(torch.load(f"saved_model_attr_{p['nb_epoch']}.pth"))
+    model.load_state_dict(torch.load(f"saved_model_attr_{p['nb_epoch']}_pp.pth"))
     model.eval()
     
     # create embeddings
-    HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_recon-trained_paths.h5'
+    HDF5_DIR = f'{args.data_path}/{args.partition}/{args.model}_recon-trained-pp_paths.h5'
     with h5py.File(HDF5_DIR, 'w') as h5f:
         for startpoint, pts in tqdm(paths.items()):
             embeddings = []
@@ -245,7 +298,7 @@ def load_data(file_path):
 # Convert text data to numerical representations
 def text_to_indices_tensor(text, word_vocab, char_vocab):
     # Tokenize the sentence into words
-    words = text.split()
+    words = preprocess_sentence(text)
     
     # Tokenize each word into characters and map to indices
     char_seq_indices = []
@@ -376,7 +429,7 @@ def train_attr_embedding(model, train_data, val_data, params):
         print(f"Epoch {epoch+1}/{params['nb_epoch']}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
     
     # Save the trained model
-    torch.save(model.state_dict(), f"saved_model_attr_{params['nb_epoch']}.pth")
+    torch.save(model.state_dict(), f"saved_model_attr_{params['nb_epoch']}_pp.pth")
     print("Model saved successfully.")
 
 def test_attr_embedding(model, test_data, params):
@@ -480,7 +533,7 @@ def testing(test_data, char_vocab, word_vocab, p):
     test_dataset = CustomDataset(test_data, char_vocab, word_vocab)
     
     model = AttributeEmbedding(len(char_vocab), len(word_vocab), p['drop_out_rate_ent'], p['word_embed_dim'], p['char_embed_dim'], p['hidden_dim_ent'], p['num_entEmb_layers'], p['entity_embed_dim'], p['conv_filter_size'])
-    model.load_state_dict(torch.load(f"saved_model_attr_{p['nb_epoch']}.pth"))
+    model.load_state_dict(torch.load(f"saved_model_attr_{p['nb_epoch']}_pp.pth"))
     
     test_attr_embedding(model, test_dataset, p)
     
