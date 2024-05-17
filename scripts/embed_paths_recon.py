@@ -119,53 +119,6 @@ class CustomLayer(nn.Module):
         x = self.activation(x)
         return x
 
-class IntgAttributeEmbedding(nn.Module):
-    def __init__(self, char_vocab_size, word_vocab_size, drop_out_rate, word_embed_dim, char_embed_dim,
-                 hidden_dim, num_layers, num_classes, conv_filter_size):
-        super(AttributeEmbedding, self).__init__()
-
-        # Word embeddings
-        self.word_embeddings = WordEmbeddings(word_vocab_size, word_embed_dim)
-
-        # Character embeddings
-        self.char_embeddings = CharEmbeddings(char_vocab_size, char_embed_dim, drop_out_rate)
-
-        # Bidirectional LSTM encoder
-        self.lstm = nn.LSTM(word_embed_dim + char_embed_dim, hidden_dim, 
-                            num_layers=num_layers, bidirectional=True, batch_first=True)
-        
-        # 1D convolutional network (CNN)
-        self.conv1d = nn.Conv1d(2 * hidden_dim, num_classes, conv_filter_size)
-        
-        self.custom_layer = CustomLayer(output_size=768)
-        
-        # Final linear layer for classification
-        # self.fc = nn.Linear(768, 2)
-        
-    def forward(self, word_char_indices):
-        embeds = []
-        for (text, word_index, char_index) in word_char_indices:
-            word_embeds = self.word_embeddings(word_index).squeeze(0)
-            char_embeds = self.char_embeddings(char_index)
-            
-            # Average pooling of char embedding
-            word_embed_avg = torch.mean(char_embeds.squeeze(0), dim=2, keepdim=True)
-            char_embeds = word_embed_avg.permute(0, 2, 1, 3)
-            
-            concatenated_embeddings = torch.cat((char_embeds, word_embeds), dim=3)
-            
-            lstm_output, _ = self.lstm(concatenated_embeddings.squeeze(1))
-            
-            embeds.append(lstm_output)
-        
-        stacked_outputs = torch.cat(embeds, dim=1).permute(0, 2, 1)
-        
-        cnn_output = self.conv1d(stacked_outputs)
-        
-        embedding = self.custom_layer(cnn_output)
-        
-        return embedding
-
 class AttributeEmbedding(nn.Module):
     def __init__(self, char_vocab_size, word_vocab_size, drop_out_rate, word_embed_dim, char_embed_dim,
                  hidden_dim, num_layers, num_classes, conv_filter_size):
